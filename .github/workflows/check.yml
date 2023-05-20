@@ -1,0 +1,75 @@
+name: check
+
+on:
+  workflow_call:
+    inputs:
+      environment-file:
+        required: true
+        type: string
+
+      ignore-file:
+        required: false
+        type: string
+
+      issue-number:
+        required: false
+        type: number
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - name: Clone target repository
+        uses: actions/checkout@v3
+        with:
+          path: repo
+
+      - name: Clone workflow repository
+        uses: actions/checkout@v3
+        with:
+          repository: epassaro/conda-deps-check
+          path: tool
+
+      - name: Setup Miniconda
+        uses: conda-incubator/setup-miniconda@v2
+
+      - name: Create Report Environment
+        run: |
+          conda install -n base conda-libmamba-solver && conda config --set solver libmamba
+          conda create -n jake python=3.10 jake=0.2.77 pandas=1.5.3 tabulate=0.8.10 -c conda-forge
+
+      - name: Create Target Environment
+        run: |
+          conda env create -f repo/${{ inputs.environment-file }}
+          echo "ENVIRONMENT_NAME=$(yq e '.name' repo/${{ inputs.environment-file }})" >> "$GITHUB_ENV"
+
+      - name: Run Jake
+        run: |
+          conda activate jake
+          conda list -n ${{ env.ENVIRONMENT_NAME }} | jake ddt -c --output-format json > report.json
+
+      - name: Generate Issue Content
+        run: |
+          conda activate jake
+          python tool/.ci-helpers/report.py -i report.json -o issue-body.md --ignore-file repo/${{ inputs.ignore-file }}
+          echo "CURRENT_DATE=$(date +'%b %d, %Y')" >> "$GITHUB_ENV"
+        if: failure()
+
+      - name: Create or Update Issue From File
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          title: Security alert updates (${{ env.CURRENT_DATE }})
+          content-filepath: ./issue-body.md
+          issue-number: ${{ inputs.issue-number }}
+          labels: |
+            report
+            automated issue
+        if: failure()
